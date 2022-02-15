@@ -1,7 +1,7 @@
 # This program implements the Transported Snapshot Model Order Reduction method
 # of Nair and Balajewicz (2019), specifically for the Quasi-1D Steady C-D nozzle
 # flow problem (problem #1 of their work)
-
+#need to change this
 import numpy as np
 import matplotlib.pylab as plt
 from math import pi as mathPi
