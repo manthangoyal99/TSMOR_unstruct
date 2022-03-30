@@ -9,10 +9,13 @@ from math import pi as mathPi
 from math import pow as mathPow
 from scipy.interpolate import interp1d
 from scipy.interpolate import griddata
+from scipy.interpolate import SmoothBivariateSpline
 import copy
 from MyPythonCodes.tools import Findiff_Taylor_uniform
 from MyPythonCodes.mesh import UnstructuredMesh, getFileExtUSMD, \
     meshCellFaceProps,PolygonNormAreaCntrd
+from scipy.spatial import KDTree
+
 #np.set_printoptions(threshold=np.inf)
 
 
@@ -23,7 +26,7 @@ def calc_grid_distortion_basis(points,dMu,ib,nf,axis):
     one p-q pair, towards the grid distortion c_s.
     
     INPUTS:
-    xarr : Array of grid points
+    points : 2d array of grid points suchh that indices represent the node and columns are the co-ordinates
     dMu  : Parameter difference between reference and predicted snapshots
     ib   : Basis function index ('m' in eqn. 11 above but with 0-based indexing)
     nf   : Total number of 'f' basis functions ('N_p' in eqn. 11 above)
@@ -47,6 +50,7 @@ def calc_grid_distortion_basis(points,dMu,ib,nf,axis):
             grid_distortion_basis_term_f = np.ones(np.shape(points)[0])
         else:
             grid_distortion_basis_term_f = np.sin(ibf*np.pi*(points[:,0]-xi)/Lx)
+        #grid_distortion_basis_term_f = np.sin((ibf+1)*np.pi*(points[:,0]-xi)/Lx)
     else:
         if ibf == 0:
             grid_distortion_basis_term_f = np.ones(np.shape(points)[0])
@@ -131,6 +135,7 @@ def calc_transported_snap(coeffsx,coeffsy,points,u,dMu,ng=1):
     """
     # Distorted grid corresponding to given original grid, distortion
     # coefficients and parameter differential
+    print("coeffsx ", coeffsx)
     points_new = calc_distorted_grid(coeffsx,coeffsy,points,dMu,ng=ng)
     # We have to allow 'u' to be a 1D array corresponding to a single-component
     # (scalar) field; to make the subsequent steps agnostic to this, we reshape
@@ -147,12 +152,52 @@ def calc_transported_snap(coeffsx,coeffsy,points,u,dMu,ng=1):
     for ic in range(nc):    #Go thru each component
         # Generate the interpolation object by assuming that 'u' is specified
         # on the distorted grid
-        ut[:,ic] = griddata(points_new,u[:,ic],points,method = 'linear',fill_value=.1)
+        ut[:,ic] = griddata(points_new,u[:,ic],points,method = 'linear',fill_value=nan)
+        extrap_func = KDTree(points_new)
+        print('nan values',np.size(np.argwhere(np.isnan(ut[:,ic]))))
+
+        #print(np.shape(points_new))
+        #use when only 1 neighbour is required 
+        
+        #dis,index = extrap_func.query(points[np.isnan(ut[:,ic])],1)
+        #print(np.shape(u[index,ic]))
+        #ut[np.isnan(ut[:,ic]),ic] = u[index,ic]
+        
+        '''
+        use when more than 1 nbr is required 
+        '''
+        dis,index = extrap_func.query(points[np.isnan(ut[:,ic])],4)
+        dis_copy = np.copy(dis)
+        dis_copy[dis[:,0]==0,0] = 1e-20
+        print(np.shape(dis))
+        #print(dis)
+        weights = (1/dis_copy)/(np.sum(1/dis_copy,axis = 1,keepdims=True))
+        #print("weights",(weights))
+        print('0 values',np.size(np.argwhere(dis[:,0]==0)))
+        print(np.shape(u[index,ic]))
+        extrap_data = np.sum(weights*u[index,ic],axis = 1)
+        #print(np.shape(extrap_data))
+        ut[np.isnan(ut[:,ic]),ic] = extrap_data
+        #ut[index[dis[:,0]==0],ic] = u[index[dis[:,0]==0],ic]
+        
+        #exit()
+
+        #print(extrap_data)
+        #print(ut[x,ic])
+
+        #extrap_func = SmoothBivariateSpline(points_new[:,0],points_new[:,1],u[:,ic],s=0.0,kx=1,ky=1)
+        ##print("indices ",np.argwhere(np.isnan(ut)))
+        #print(np.shape(points_new[:,0]))
+        #print(ut[np.isnan(ut[:,ic]),ic])
+        #print(np.shape(ut[np.isnan(ut[:,ic]),ic]))
+        #print(extrap_func(points[np.isnan(ut[:,ic]),0],points[np.isnan(ut[:,ic]),1]))
+        #print(np.shape(extrap_func(points[:,0],points[:,1])))
+        #ut[np.isnan(ut[:,ic]),ic] = extrap_func(points[np.isnan(ut[:,ic]),0],points[np.isnan(ut[:,ic]),1])
     return np.reshape(ut,ushp)  #Make sure to return 1D array if input was so
 #enddef calc_transported_snap
 
 
-def calc_transported_snap_error(coeffsx,coeffsy,points,uRef,uNbs,dMuNbs,ng=1):
+def calc_transported_snap_error(coeffsx,coeffsy,mesh_base,uRef,uNbs,dMuNbs,ref_error=None,ng=1):
     """
     Calculate the square of the 2-norm of error between the transported versions
     of a reference snapshot and other (neighbouring) snapshots
@@ -177,11 +222,16 @@ def calc_transported_snap_error(coeffsx,coeffsy,points,uRef,uNbs,dMuNbs,ng=1):
         # Transport the reference snapshot 'uRef' by the parameter differential
         # 'dMu' using the grid distortion coefficients 'coeff' over the original
         # grid 'xarr'
-        u0t = calc_transported_snap(coeffsx,coeffsy,points,uRef,dMu,ng=ng)
+        u0t = calc_transported_snap(coeffsx,coeffsy,mesh_base.getNodes(),uRef,dMu,ng=ng)
         # Add the square of the 2-norm of the difference between the transported
         # snapshot and the neighbour to the running sum of error 
+        print("marker tags", mesh_base.getMarkTags())
+        #exit()
         error += np.linalg.norm(u0t - uNbs[inb])**2
-    return error
+    if ref_error==None: 
+        return error
+    else:
+        return error/ref_error
 #enddef calc_transported_snap_error
 
 
@@ -231,7 +281,7 @@ def calc_grid_distortion_constraint(coeffsx,coeffsy,mesh_base,dMuNbs,ng=1):
         ineq[:,iMu] = -1*parameters_distorted*parameters_base
     # Reshape to 1D array with 1st index changing fastest (Fortran-style column
     # major order)
-    mesh_distorted.delete()
+    #mesh_distorted.delete()
     return np.reshape(ineq,(-1),'F')
 #enddef calc_grid_distortion_constraint
 
@@ -299,14 +349,18 @@ class Project_TSMOR_Offline(object):
         self.uRef = u_db[iRef,:,:]    #Extract reference snapshot
         # Form list of neighbouring snapshots
         self.uNbs = [u_db[iNb,:,:] for iNb in iNbs]
+
         # Form list of neighbouring snapshots
         #self.uNbs_norm = [u_db_norm[:,:,iNb] for iNb in iNbs]
         # Form list of corresponding parameter differentials from reference
         self.dMuNbs = [Mus_db[iNb]-Mus_db[iRef] for iNb in iNbs]
         self.ng = ng  #Store no. of 'g' basis function
         self.mesh_base = mesh_base
+        self.mesh_base._readLite()
         self.nfx = nfx
         self.nfy = nfy
+        self.ref_error = calc_transported_snap_error(np.zeros(nfx),np.zeros(nfy),self.mesh_base,\
+            self.uRef,self.uNbs,self.dMuNbs,ng=self.ng)
     #prints the inlet
 
     # Evaluates the objective function based on the supplied set of independent
@@ -317,8 +371,8 @@ class Project_TSMOR_Offline(object):
         coeffsx = coeffs[:self.nfx]
         coeffsy = coeffs[self.nfx:]
 
-        return [calc_transported_snap_error(coeffsx,coeffsy,self.mesh_base.getNodes(),self.uRef, \
-            self.uNbs,self.dMuNbs,ng=self.ng)]
+        return [calc_transported_snap_error(coeffsx,coeffsy,self.mesh_base,self.uRef, \
+            self.uNbs,self.dMuNbs,self.ref_error,ng=self.ng)]
     # Evaluates inequality constraint vector based on supplied set of
     # independent variables (coefficients towards grid distortion that are to be
     # optimized)
@@ -358,7 +412,7 @@ class Project_TSMOR_Offline(object):
         
         for iNb, dMu in enumerate(self.dMuNbs):
             #print(iNb,dMu)
-            dist_nb = calc_transported_snap(coeffsx,coeffsy,points,self.uRef,dMu,ng=1)
+            dist_nb = calc_transported_snap(coeffsx,coeffsy,points,self.uRef,dMu,ng=self.ng)
             #print(dist_nb)
             #print(type(dist_nb))
             #plt.plot(self.xarr,np.array(self.uNbs[iNb][:,iv])*(self.uNbs_in[iNb][iv]),'--',label = "neighbour "+str(iNb+1))
@@ -370,7 +424,12 @@ class Project_TSMOR_Offline(object):
             plt.tricontour(points[:,0],points[:,1],self.uNbs[iNb][:,0],20,colors = "red")
             plt.show()
             #plt.plot(calc_distorted_grid(coeffs,self.xarr,dMu,self.normalised),self.uRef[:,iv]*self.u_db_inlet[iv,iRef],'--')
+            points_new = calc_distorted_grid(coeffsx,coeffsy,points,dMu,ng=self.ng)
+            plt.scatter(points[:,0],points[:,1],color = "blue",s=.5)
+            plt.scatter(points_new[:,0],points_new[:,1],color = "red",s = .5)
+            plt.show()
 
+                
 
 #endclass Project_TSMOR_Offline
 
