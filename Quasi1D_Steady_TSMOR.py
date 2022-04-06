@@ -3,6 +3,7 @@
 # flow problem (problem #1 of their work)
 #need to change this
 from cmath import nan
+#from tkinter import Y
 import numpy as np
 import matplotlib.pylab as plt
 from math import pi as mathPi
@@ -15,14 +16,21 @@ from MyPythonCodes.tools import Findiff_Taylor_uniform
 from MyPythonCodes.mesh import UnstructuredMesh, getFileExtUSMD, \
     meshCellFaceProps,PolygonNormAreaCntrd
 from scipy.spatial import KDTree
+from pysph.base.utils import get_particle_array
+from pysph.tools.interpolator import Interpolator
 
+'''
+check if interpolation is happening properly
+see if a surface equation can be obtained easily
+
+'''
 #np.set_printoptions(threshold=np.inf)
-
+lamb = 0.01
 
 def calc_grid_distortion_basis(points,dMu,ib,nf,axis):
     """
     Calculate one particular basis function towards the grid distortion.
-    Referring to eqn. 11 of Nair & Balajewicz (2019), this returns f_p*g_q for
+    Referring to eqn. 11 of Nair & Balajtewicz (2019), this returns f_p*g_q for
     one p-q pair, towards the grid distortion c_s.
     
     INPUTS:
@@ -155,9 +163,11 @@ def calc_transported_snap(coeffsx,coeffsy,points,u,dMu,ng=1):
         ut[:,ic] = griddata(points_new,u[:,ic],points,method = 'linear',fill_value=nan)
         extrap_func = KDTree(points_new)
         print('nan values',np.size(np.argwhere(np.isnan(ut[:,ic]))))
-
+        x = np.argwhere(np.isnan(ut[:,ic]))
         #print(np.shape(points_new))
-        #use when only 1 neighbour is required 
+        '''
+        use when only 1 neighbour is required
+        ''' 
         
         #dis,index = extrap_func.query(points[np.isnan(ut[:,ic])],1)
         #print(np.shape(u[index,ic]))
@@ -166,20 +176,38 @@ def calc_transported_snap(coeffsx,coeffsy,points,u,dMu,ng=1):
         '''
         use when more than 1 nbr is required 
         '''
-        dis,index = extrap_func.query(points[np.isnan(ut[:,ic])],4)
-        dis_copy = np.copy(dis)
-        dis_copy[dis[:,0]==0,0] = 1e-20
-        print(np.shape(dis))
-        #print(dis)
-        weights = (1/dis_copy)/(np.sum(1/dis_copy,axis = 1,keepdims=True))
-        #print("weights",(weights))
-        print('0 values',np.size(np.argwhere(dis[:,0]==0)))
-        print(np.shape(u[index,ic]))
-        extrap_data = np.sum(weights*u[index,ic],axis = 1)
-        #print(np.shape(extrap_data))
-        ut[np.isnan(ut[:,ic]),ic] = extrap_data
-        #ut[index[dis[:,0]==0],ic] = u[index[dis[:,0]==0],ic]
+        #dis,index = extrap_func.query(points[np.isnan(ut[:,ic])],2)
+        #dis_copy = np.copy(dis)
+        #dis_copy[dis[:,0]==0,0] = 1e-20
+        #print(np.shape(dis))
+        ##print(dis)
+        #weights = (1/dis_copy)/(np.sum(1/dis_copy,axis = 1,keepdims=True))
+        ##print("weights",(weights))
+        #print('0 values',np.size(np.argwhere(dis[:,0]==0)))
+        #print(np.shape(u[index,ic]))
+        #extrap_data = np.sum(weights*u[index,ic],axis = 1)
+        ##print(np.shape(extrap_data))
+        #ut[np.isnan(ut[:,ic]),ic] = extrap_data
+        ##ut[index[dis[:,0]==0],ic] = u[index[dis[:,0]==0],ic]
         
+        '''
+        Pysph memthod for extrapolation
+        '''
+        #additional_props = ['prop1', 'prop2', 'prop3']
+        pa = get_particle_array(name = "myprop",x=points_new[:,0],y=points_new[:,1],rho=u[:,0],h = 1.3*(points[0,0]-points[1,0]),
+            m=.1)
+        #pa = get_particle_array(name = "myprop",additional_props=additional_props)
+        #pa.prop1[:] = 1.
+        #pa.add_property('new_prop')
+        #pa.new_prop[:] = constant
+        interp = Interpolator([pa], x=points[np.isnan(ut[:,ic]),0],
+                                  y=points[np.isnan(ut[:,ic]),1],method='shepard')
+        
+        ut[np.isnan(ut[:,ic]),ic] = interp.interpolate('rho')
+        #plt.plot(ut[x,ic])
+        #plt.plot(u[x,ic])
+        #plt.show()
+
         #exit()
 
         #print(extrap_data)
@@ -218,6 +246,8 @@ def calc_transported_snap_error(coeffsx,coeffsy,mesh_base,uRef,uNbs,dMuNbs,ref_e
     error : Total error across all neighbouring snapshots
     """
     error = 0 #Initialize as 0 to calculate as running sum over all neighbours
+    mesh_distorted = copy.deepcopy(mesh_base)
+
     for inb, dMu in enumerate(dMuNbs): #Go thru all neighbours
         # Transport the reference snapshot 'uRef' by the parameter differential
         # 'dMu' using the grid distortion coefficients 'coeff' over the original
@@ -225,9 +255,22 @@ def calc_transported_snap_error(coeffsx,coeffsy,mesh_base,uRef,uNbs,dMuNbs,ref_e
         u0t = calc_transported_snap(coeffsx,coeffsy,mesh_base.getNodes(),uRef,dMu,ng=ng)
         # Add the square of the 2-norm of the difference between the transported
         # snapshot and the neighbour to the running sum of error 
-        print("marker tags", mesh_base.getMarkTags())
+        #print("marker tags", mesh_base.getMarkTags())
+        #nodes_upper = mesh_base.getMarkTags('upperwall')
+        mesh_distorted.nodes = calc_distorted_grid(coeffsx,coeffsy,mesh_base.getNodes(),dMu,ng=ng)
+        nodes_lower = np.unique(mesh_base.getMarkCells('lowerwall')[0][0][0])
+        nodes_lower_dist = np.unique(mesh_distorted.getMarkCells('lowerwall')[0][0][0])
+        coor_lower = mesh_base.getNodes()[nodes_lower]
+        dist_lower = (coor_lower[:][0]**2+coor_lower[:][1]**2)**.5
+        coor_lower_dist = mesh_distorted.getNodes()[nodes_lower_dist]
+        dist_lower_dist = (coor_lower_dist[:][0]**2+coor_lower_dist[:][1]**2)**.5
+        #print((nodes_lower))
+        #print((type(nodes_lower)))
         #exit()
-        error += np.linalg.norm(u0t - uNbs[inb])**2
+        #error += np.linalg.norm(u0t - uNbs[inb])**2 +lamb*(np.linalg.norm(u0t[nodes_lower]-uNbs[inb][nodes_lower])**2)
+        error += np.linalg.norm(u0t - uNbs[inb])**2#/2.484 +lamb*(np.linalg.norm(coor_lower-coor_lower_dist)**2)
+        #error += np.linalg.norm(u0t - uNbs[inb])**2/2.484 +lamb*(np.linalg.norm(dist_lower-dist_lower_dist)**2)
+        #exit()
     if ref_error==None: 
         return error
     else:
@@ -272,6 +315,8 @@ def calc_grid_distortion_constraint(coeffsx,coeffsy,mesh_base,dMuNbs,ng=1):
     # Allocate array of inequality constraint values to be returned
     mesh_base._readMeshCellNodes()
     ineq = np.zeros((mesh_base.getNCell(),len(dMuNbs)))
+    ineq_coeffs = np.append(coeffsx-1,coeffsy-1)
+
     ### make a new ineq array which has data related to cell area and normal no. of cells * 2
     parameters_base = meshCellFaceProps.CalcSignedArea2d(mesh_base)
     for iMu, dMu in enumerate(dMuNbs):
@@ -282,7 +327,7 @@ def calc_grid_distortion_constraint(coeffsx,coeffsy,mesh_base,dMuNbs,ng=1):
     # Reshape to 1D array with 1st index changing fastest (Fortran-style column
     # major order)
     #mesh_distorted.delete()
-    return np.reshape(ineq,(-1),'F')
+    return np.append(np.reshape(ineq,(-1),'F'),ineq_coeffs)
 #enddef calc_grid_distortion_constraint
 
 
@@ -359,8 +404,13 @@ class Project_TSMOR_Offline(object):
         self.mesh_base._readLite()
         self.nfx = nfx
         self.nfy = nfy
+        #self.ref_error = np.linalg.norm(self.uRef-self.uNbs[0]) + np.linalg.norm(self.uRef-self.uNbs[1])#
         self.ref_error = calc_transported_snap_error(np.zeros(nfx),np.zeros(nfy),self.mesh_base,\
             self.uRef,self.uNbs,self.dMuNbs,ng=self.ng)
+        #print(self.ref_error)
+        #exit()
+        #nodes_lower = np.unique(self.mesh_base.getMarkCells('lowerwall')[0][0][0])
+        #self.ref_dist = np.linalg.norm()
     #prints the inlet
 
     # Evaluates the objective function based on the supplied set of independent
@@ -372,7 +422,7 @@ class Project_TSMOR_Offline(object):
         coeffsy = coeffs[self.nfx:]
 
         return [calc_transported_snap_error(coeffsx,coeffsy,self.mesh_base,self.uRef, \
-            self.uNbs,self.dMuNbs,self.ref_error,ng=self.ng)]
+            self.uNbs,self.dMuNbs,ref_error= self.ref_error,ng=self.ng)]
     # Evaluates inequality constraint vector based on supplied set of
     # independent variables (coefficients towards grid distortion that are to be
     # optimized)
@@ -423,11 +473,15 @@ class Project_TSMOR_Offline(object):
             #print(self.uNbs[iNb][:,0])
             plt.tricontour(points[:,0],points[:,1],self.uNbs[iNb][:,0],20,colors = "red")
             plt.show()
+
+            plt.scatter(points[:,0],points[:,1],c = abs(dist_nb[:,0]-self.uNbs[iNb][:,0]),s=5)
+            plt.show()
             #plt.plot(calc_distorted_grid(coeffs,self.xarr,dMu,self.normalised),self.uRef[:,iv]*self.u_db_inlet[iv,iRef],'--')
             points_new = calc_distorted_grid(coeffsx,coeffsy,points,dMu,ng=self.ng)
             plt.scatter(points[:,0],points[:,1],color = "blue",s=.5)
             plt.scatter(points_new[:,0],points_new[:,1],color = "red",s = .5)
             plt.show()
+
 
                 
 
