@@ -2,6 +2,7 @@
 # of Nair and Balajewicz (2019), specifically for the Quasi-1D Steady C-D nozzle
 # flow problem (problem #1 of their work)
 #need to change this
+from cProfile import label
 from cmath import nan
 #from tkinter import Y
 import numpy as np
@@ -18,6 +19,7 @@ from MyPythonCodes.mesh import UnstructuredMesh, getFileExtUSMD, \
 from scipy.spatial import KDTree
 from pysph.base.utils import get_particle_array
 from pysph.tools.interpolator import Interpolator
+import gc
 
 '''
 check if interpolation is happening properly
@@ -161,7 +163,7 @@ def calc_transported_snap(coeffsx,coeffsy,points,u,dMu,ng=1):
         # Generate the interpolation object by assuming that 'u' is specified
         # on the distorted grid
         ut[:,ic] = griddata(points_new,u[:,ic],points,method = 'linear',fill_value=nan)
-        extrap_func = KDTree(points_new)
+        #extrap_func = KDTree(points_new)
         print('nan values',np.size(np.argwhere(np.isnan(ut[:,ic]))))
         x = np.argwhere(np.isnan(ut[:,ic]))
         #print(np.shape(points_new))
@@ -194,16 +196,18 @@ def calc_transported_snap(coeffsx,coeffsy,points,u,dMu,ng=1):
         Pysph memthod for extrapolation
         '''
         #additional_props = ['prop1', 'prop2', 'prop3']
-        pa = get_particle_array(name = "myprop",x=points_new[:,0],y=points_new[:,1],rho=u[:,0],h = 1.3*(points[0,0]-points[1,0]),
-            m=.1)
+        h = 4 * np.max(np.diff(points_new[:,0],axis=0))
+        m = h**2
+        pa = get_particle_array(name = "myprop",x=points_new[:,0],y=points_new[:,1],density=u[:,0],h = h,
+            m=m)
         #pa = get_particle_array(name = "myprop",additional_props=additional_props)
         #pa.prop1[:] = 1.
         #pa.add_property('new_prop')
         #pa.new_prop[:] = constant
         interp = Interpolator([pa], x=points[np.isnan(ut[:,ic]),0],
-                                  y=points[np.isnan(ut[:,ic]),1],method='shepard')
+                                  y=points[np.isnan(ut[:,ic]),1],method='order1')
         
-        ut[np.isnan(ut[:,ic]),ic] = interp.interpolate('rho')
+        ut[np.isnan(ut[:,ic]),ic] = interp.interpolate('density')
         #plt.plot(ut[x,ic])
         #plt.plot(u[x,ic])
         #plt.show()
@@ -271,10 +275,14 @@ def calc_transported_snap_error(coeffsx,coeffsy,mesh_base,uRef,uNbs,dMuNbs,ref_e
         error += np.linalg.norm(u0t - uNbs[inb])**2#/2.484 +lamb*(np.linalg.norm(coor_lower-coor_lower_dist)**2)
         #error += np.linalg.norm(u0t - uNbs[inb])**2/2.484 +lamb*(np.linalg.norm(dist_lower-dist_lower_dist)**2)
         #exit()
+    
+    del mesh_distorted
+    gc.collect()
+
     if ref_error==None: 
         return error
     else:
-        return error/ref_error
+        return (error)/ref_error
 #enddef calc_transported_snap_error
 
 
@@ -316,7 +324,12 @@ def calc_grid_distortion_constraint(coeffsx,coeffsy,mesh_base,dMuNbs,ng=1):
     mesh_base._readMeshCellNodes()
     ineq = np.zeros((mesh_base.getNCell(),len(dMuNbs)))
     ineq_coeffs = np.append(coeffsx-1,coeffsy-1)
-
+    nodes_lower = np.unique(mesh_base.getMarkCells('lowerwall')[0][0][0])
+    coor_lower = mesh_base.getNodes()[nodes_lower]
+    dx = np.sum(np.diff(coor_lower[:,0]))/np.size(coor_lower)
+    print('dx',dx)
+    ineq_bump_sliding = np.zeros((np.shape(coor_lower)[0],len(dMuNbs)))
+    
     ### make a new ineq array which has data related to cell area and normal no. of cells * 2
     parameters_base = meshCellFaceProps.CalcSignedArea2d(mesh_base)
     for iMu, dMu in enumerate(dMuNbs):
@@ -324,10 +337,36 @@ def calc_grid_distortion_constraint(coeffsx,coeffsy,mesh_base,dMuNbs,ng=1):
         ###call the meshprocfaces method
         parameters_distorted = meshCellFaceProps.CalcSignedArea2d(mesh_distorted)
         ineq[:,iMu] = -1*parameters_distorted*parameters_base
-    # Reshape to 1D array with 1st index changing fastest (Fortran-style column
-    # major order)
-    #mesh_distorted.delete()
-    return np.append(np.reshape(ineq,(-1),'F'),ineq_coeffs)
+
+        nodes_lower_dist = np.unique(mesh_distorted.getMarkCells('lowerwall')[0][0][0])
+        
+        coor_lower_dist = mesh_distorted.getNodes()[nodes_lower_dist]
+
+        extrap_func = KDTree(coor_lower)
+
+        dis,index = extrap_func.query(coor_lower_dist,2)
+        #print(index)
+        dis_copy = np.copy(dis)
+        dis_copy[dis[:,0]==0,0] = 1e-20
+        #print(np.shape(nodes_lower))
+        #print(np.shape(index))
+        #print(dis)
+        #dist_lower_dist = (coor_lower_dist[:][0]**2+coor_lower_dist[:][1]**2)**.5
+        weights = (1/dis_copy)/(np.sum(1/dis_copy,axis = 1,keepdims=True))
+        #print("weights",(weights))
+        #print(np.shape(coor_lower[index,1]))
+        x_avg = np.sum(weights*coor_lower[index,0],axis = 1,keepdims=True)
+        y_avg = np.sum(weights*coor_lower[index,1],axis = 1,keepdims=True)
+        #print(np.shape(x_avg))
+        r_avg = np.hstack((x_avg,y_avg))
+        #print('r_avg',np.shape(r_avg))
+        diff_vector = coor_lower_dist - r_avg
+        ineq_bump_sliding[:,iMu] = diff_vector[:,0]**2+diff_vector[:,1]**2 - .2*dx
+
+        #exit()
+        #ut[index[dis[:,0]==0],ic] = u[index[dis[:,0]==0],ic]
+    #return np.append(np.reshape(ineq,(-1),'F'),ineq_coeffs)
+    return np.append(np.reshape(ineq,(-1),'F'),np.reshape(ineq_bump_sliding,(-1),'F'))
 #enddef calc_grid_distortion_constraint
 
 
@@ -448,7 +487,7 @@ class Project_TSMOR_Offline(object):
         return []
     
     # Post-process the optimization solution
-    def solnPost(self,output):
+    def solnPost(self,output,meshx,meshy):
         #print(self.xarr)
 
         coeffs = output[0]
@@ -460,26 +499,47 @@ class Project_TSMOR_Offline(object):
 
         points = self.mesh_base.getNodes()
         
+
+
         for iNb, dMu in enumerate(self.dMuNbs):
             #print(iNb,dMu)
             dist_nb = calc_transported_snap(coeffsx,coeffsy,points,self.uRef,dMu,ng=self.ng)
             #print(dist_nb)
             #print(type(dist_nb))
             #plt.plot(self.xarr,np.array(self.uNbs[iNb][:,iv])*(self.uNbs_in[iNb][iv]),'--',label = "neighbour "+str(iNb+1))
-            plt.tricontour(points[:,0],points[:,1],self.uRef[:,0],20,colors = "black",linestyles = 'dashdot') # choose 20 contour levels, just to show how good its interpolation is
+            #plt.tricontour(points[:,0],points[:,1],self.uRef[:,0],20,colors = "black",linestyles = 'dashdot') # choose 20 contour levels, just to show how good its interpolation is
             #print(np.shape(dist_nb))
-            plt.tricontour(points[:,0],points[:,1],dist_nb[:,0],20)
+
+            dist_np_sq = np.reshape(dist_nb,(128,256,-1))
+            uNbs_sq = np.reshape(self.uNbs[iNb],(128,256,-1))
+
+            CS = plt.contour(meshx,meshy,dist_np_sq[:,:,0],20)
+            plt.clabel(CS, inline=1, fontsize=10)
+            plt.contour(meshx,meshy,uNbs_sq[:,:,0],20,colors='red')
+
+            plt.show()
+
+            plt.tricontour(points[:,0],points[:,1],dist_nb[:,0],20,label = 'distorted')
+
             #print(np.shape(self.uNbs))
             #print(self.uNbs[iNb][:,0])
-            plt.tricontour(points[:,0],points[:,1],self.uNbs[iNb][:,0],20,colors = "red")
+            plt.tricontour(points[:,0],points[:,1],self.uNbs[iNb][:,0],20,colors = "red",label = 'neighbour')
+            plt.xlabel('x')
+            plt.ylabel('y')
+            plt.title('Density contours for the neighbouring and the distorted grid')
+            plt.legend()
             plt.show()
 
             plt.scatter(points[:,0],points[:,1],c = abs(dist_nb[:,0]-self.uNbs[iNb][:,0]),s=5)
             plt.show()
             #plt.plot(calc_distorted_grid(coeffs,self.xarr,dMu,self.normalised),self.uRef[:,iv]*self.u_db_inlet[iv,iRef],'--')
             points_new = calc_distorted_grid(coeffsx,coeffsy,points,dMu,ng=self.ng)
-            plt.scatter(points[:,0],points[:,1],color = "blue",s=.5)
-            plt.scatter(points_new[:,0],points_new[:,1],color = "red",s = .5)
+            plt.scatter(points[:,0],points[:,1],color = "blue",s=2,label='Points on the base mesh')
+            plt.scatter(points_new[:,0],points_new[:,1],color = "red",s =2,label = 'Points on the distorted mesh')
+            plt.xlabel('x')
+            plt.ylabel('y')
+            plt.title('Distortion')
+            plt.legend()
             plt.show()
 
 

@@ -1,6 +1,7 @@
 # Driver program for Nair Balajewicz' (2019) Transported Snapshot Model Order
 # Reduction method applied to the quasi 1D steady C-D nozzle flow problem
 
+from distutils.log import error
 import numpy as np
 import os
 from optparse import OptionParser
@@ -16,7 +17,7 @@ parser = OptionParser(usage="usage: %prog -f filename -p pathOut -d debug")
 parser.add_option('-p',dest='path',default='.',help='Output path')
 
 parser.add_option('--nx',dest='nfx',default='3',help='No. of Fourier bases for x')
-parser.add_option('--ny',dest='nfy',default='3',help='No. of Fourier bases for y')
+parser.add_option('--ny',dest='nfy',default='2',help='No. of Fourier bases for y')
 
 parser.add_option('-t',dest='train',action="store_true",default=True, \
     help='Training before validation (if supplied); else validation only')
@@ -60,16 +61,24 @@ u_db = train_db['u_db']     #Training snapshot's flow variables
 dMus0 = Mus_db[1]-Mus_db[0] #Normalization constant for Mus_db
 Mus_db_norm = Mus_db/dMus0  #Normalized parameter array of training database
 
-u_db = u_db[:,:,2:3]/10 #only density
+u_db = u_db[:,:,2:3] #only density
+u_db = u_db/np.amax(np.amax(u_db,axis=1,keepdims=True),axis=0,keepdims=True)
+print("max", np.shape(u_db))
+#u_db = u_db/np.amax(u_db,axis = 2)
 print(np.shape(u_db))
 plt.tricontour(Nodes[:,0],Nodes[:,1],u_db[0,:,0],20) # choose 20 contour levels, just to show how good its interpolation is
 plt.show()
+plt.tripcolor(Nodes[:,0],Nodes[:,1],u_db[0,:,0],20)
+plt.show()
+
+meshx,meshy = np.reshape(Nodes[:,0],(128,256)),\
+    np.reshape(Nodes[:,1],(128,256))
 
 if options.train:
     # Pre-allocate array of grid-distortion coefficients for each snapshot
     trnsprt_Csx = np.zeros((nfx,nMus))
     trnsprt_Csy = np.zeros((nfy,nMus))
-
+    error_distortion = np.zeros(nMus)
     # Loop over snapshots to calculate their grid-distortion field coefficients
     for iRef in range(nMus):
     #for iRef in range(1):
@@ -84,8 +93,10 @@ if options.train:
 
 
         project_off=tsmor.Project_TSMOR_Offline(u_db,\
-        Mus_db_norm,iRef,iNbs,mesh_base,nfx,nfy)
-        #project_off.solnPost(np.zeros((nfx+nfy,2)))
+        Mus_db_norm,iRef,iNbs,mesh_base,nfx,nfy,ng=1)
+
+        #project_off.solnPost(np.zeros((nfx+nfy,2)),meshx,meshy)
+        #exit()
         # Form the initial guess of solution
         if iRef == 0:   #First snapshot
             coeffsx0 = np.zeros((nfx))   #Nothing better than zeros
@@ -104,6 +115,7 @@ if options.train:
         # 'output'; store it in the overall arRepresentationray
         trnsprt_Csx[:,iRef] = output[0][:nfx]
         trnsprt_Csy[:,iRef] = output[0][:nfy]
+        error_distortion[iRef] = output[1]
         #print("u  ",u_db[:4,:,iRef])
         #print("u  ",u_db[:4,:,iRef+1])
         #print("u normalised  ",u_db_norm[:4,:,iRef+1])
@@ -112,8 +124,10 @@ if options.train:
         #print("trns coeff  ",trnsprt_Cs[:,iRef])
         # Post-process the optimal solution (see it)
         #project_off.printu()
-        project_off.solnPost(output)
+        project_off.solnPost(output,meshx,meshy)
     #endfor iRef in range(nMus)   #Done addressing all training snapshots
+    #np.savetxt()
+    print(error_distortion)
     np.savez(transport_db_fn,mus=Mus_db,Cx=trnsprt_Csx,Cy = trnsprt_Csy)
 else:
     print('\nOffline stage: Loading pre-computed transport fields ...')
