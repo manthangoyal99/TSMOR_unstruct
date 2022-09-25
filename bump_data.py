@@ -10,18 +10,21 @@ def save_mesh_data():
 
     parser = OptionParser(usage="usage: %prog -f filename -p pathOut -d debug")
     parser.add_option('-p',dest='path',default='.',help='Output path')
+    parser.add_option('-j',dest='job',default='training',help='Training or Testing')
     (options,args) = parser.parse_args()
-    #outfile = os.path.join(options.path,'testing_snaps.npz')
-    outfile = os.path.join(options.path,'training_snaps.npz')
-    #mesh_file = "/home/manthangoyal/SU2_data/mesh_1x_bump.su2"  #File where struct mesh is located
-    mesh_file = "/home/manthangoyal/SU2_data/flow_data/unstruct/bump_unstruct_0.6x.su2"  #File where unstruct mesh is located
+    job = options.job
+    outfile = os.path.join(options.path,job+'_snaps.npz')
+    mesh_file = "/home/manthangoyal/SU2_data/mesh_1x_bump.su2"  #File where struct mesh is located
+    #mesh_file = "/home/manthangoyal/SU2_data/flow_data/unstruct/bump_unstruct_0.6x.su2"  #File where unstruct mesh is located
     #mesh_file = "/home/manthangoyal/SU2_data/MESHPROPTEST.su2"  
     #mesh = su2MeshData.SU2Mesh()                   #Object of su2mesh class
     #mesh.read(mesh_file)
     keywords = dict(keyword1 = 'debug')
     mesh = su2Mesh2USM.SU2Mesh2USM(mesh_file,**keywords)
     mesh.toUSM()
-    mshFn = "/home/manthangoyal/SU2_data/flow_data/unstruct/bump_unstruct_0.6x" + getFileExtUSMD()
+    #mshFn = "/home/manthangoyal/SU2_data/flow_data/unstruct/bump_unstruct_0.6x" + getFileExtUSMD()
+    mshFn = "/home/manthangoyal/SU2_data/mesh_1x_bump" + getFileExtUSMD()
+    
     mshFnFull = mshFn
 
     msh = UnstructuredMesh(mshFn)
@@ -30,16 +33,17 @@ def save_mesh_data():
 
     mcfp = MeshCellFaceProps(mshFn)
     mcfp.calc()
-    
-    machs = np.array([.7,.73,.76,.79,.82,.85])
-    #machs = np.array([.72,.74,.75,.81])
+    #machs = np.array([0.75,0.78]) #for testing unstructc
+    #machs = np.array([.7,.73,.76,.78,.81]) #for training struct
+    #machs = np.array([.7,.73,.76,.79,.82,.85]) #for training unstruct
+    machs = np.array([.74,.8]) #for testing struct
     flow_data = []
 
     for mach in machs:
         """for struct"""
-        #flow_file = "/home/manthangoyal/SU2_data/flow_data/bump-"+str(mach)+"/restart_flow.dat"
+        flow_file = "/home/manthangoyal/SU2_data/flow_data/bump-"+str(mach)+"/restart_flow.dat"
         """for unstruct"""
-        flow_file = "/home/manthangoyal/SU2_data/flow_data/unstruct/bump-"+str(mach)+"/restart_flow.dat"
+        #flow_file = "/home/manthangoyal/SU2_data/flow_data/unstruct/bump-"+str(mach)+"/restart_flow.dat"
         flow_read = su2MeshData.SU2MeshData()
         flow_read.readDataOnly(flow_file)
         flow_data.append(flow_read.data)

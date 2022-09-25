@@ -16,11 +16,12 @@ from scipy.interpolate import SmoothBivariateSpline
 import copy
 from MyPythonCodes.tools import Findiff_Taylor_uniform
 from MyPythonCodes.mesh import UnstructuredMesh, getFileExtUSMD, \
-    meshCellFaceProps,PolygonNormAreaCntrd
+    meshCellFaceProps,PolygonNormAreaCntrd,interpDistorted
 from scipy.spatial import KDTree
 from pysph.base.utils import get_particle_array
 from pysph.tools.interpolator import Interpolator
 import gc
+from SteadyAeroDyn_PY.SteadyAeroDyn.DataHandling import IntegralHlprDomainGrad
 
 '''
 check if interpolation is happening properly
@@ -45,8 +46,6 @@ def calc_grid_distortion_basis(points,dMu,ib,nf,nf_dep,axis):
     OUTPUTS:
     fpgq : Product of f_p & g_q evaluated over the grid 'xarr'
     """
-
-
     ibf = ib % nf       #'f' basis function term's index corresponding to 'ib'
     #print(ib,"\n")
     #print(ibf,"\n")
@@ -100,7 +99,6 @@ def calc_grid_distortion(coeffsx,coeffsy,points,dMu,nfxy,nfyx,ng=1):
     """
     nfx = len(coeffsx)/ng
     nfy = len(coeffsy)/ng
-
     grid_distortion = np.zeros_like(points)
 
     for ib, cc in enumerate(coeffsx):
@@ -172,7 +170,8 @@ def calc_transported_snap(coeffsx,coeffsy,points,u,dMu,nfxy,nfyx,ng=1):
         ut[:,ic] = griddata(points_new,u[:,ic],points,method = 'linear',fill_value=nan)
         #extrap_func = KDTree(points_new)
         #print('nan values',np.size(np.argwhere(np.isnan(ut[:,ic]))))
-        x = np.argwhere(np.isnan(ut[:,ic]))
+        #x = np.argwhere(np.isnan(ut[:,ic])) 
+        
         #print(np.shape(points_new))
         '''
         use when only 1 neighbour is required
@@ -205,8 +204,8 @@ def calc_transported_snap(coeffsx,coeffsy,points,u,dMu,nfxy,nfyx,ng=1):
         #additional_props = ['prop1', 'prop2', 'prop3']
         h = 4 * np.max(np.diff(points_new[:,0],axis=0))
         m = h**2
-        pa = get_particle_array(name = "myprop",x=points_new[:,0],y=points_new[:,1],density=u[:,0],h = 1.3*(points[0,0]-points[1,0]),
-            m=.1)
+        pa = get_particle_array(name = "myprop",x=points_new[:,0],y=points_new[:,1],density=u[:,0],h = 0.4*(points[0,0]-points[1,0]),
+            m=m)
         #pa = get_particle_array(name = "myprop",additional_props=additional_props)
         #pa.prop1[:] = 1.
         #pa.add_property('new_prop')
@@ -331,7 +330,7 @@ def calc_grid_distortion_constraint(coeffsx,coeffsy,mesh_base,dMuNbs,nfxy,nfyx,n
     dx = np.sum(np.diff(coor_lower[:,0]))/np.size(coor_lower)
     #print('dx',dx)
     ineq_bump_sliding = np.zeros((np.shape(coor_lower)[0],len(dMuNbs)))
-    
+    #ineq_bump_sliding = []
     ### make a new ineq array which has data related to cell area and normal no. of cells * 2
     parameters_base = meshCellFaceProps.CalcSignedArea2d(mesh_base)
     area_min = np.min(parameters_base**2)/10000
@@ -346,9 +345,14 @@ def calc_grid_distortion_constraint(coeffsx,coeffsy,mesh_base,dMuNbs,nfxy,nfyx,n
         #nodes_lower_dist ->Nodes of the bump wall of the distorted mesh 
         nodes_lower_dist = np.unique(mesh_distorted.getMarkCells('lowerwall')[0][0][0]) 
         coor_lower_dist = mesh_distorted.getNodes()[nodes_lower_dist]
+        #print(type(nodes_lower_dist))
+
+        #nodes_lower_dist = nodes_lower_dist[np.where((coor_lower_dist[:,0]<=2) & (coor_lower_dist[:,0]>=1))]
+        #coor_lower_dist = mesh_distorted.getNodes()[nodes_lower_dist]
+
         #print("number of points on boundary- ",np.shape(coor_lower,"  ", np.shape(coor_lower_dist)))
         extrap_func = KDTree(coor_lower)
-        dis,index = extrap_func.query(coor_lower_dist,2)
+        dis,index = extrap_func.query(coor_lower_dist,2)    
         dis_copy = np.copy(dis)
         dis_copy[dis[:,0]==0,0] = 1e-20
         weights = (1/dis_copy)/(np.sum(1/dis_copy,axis = 1,keepdims=True))
@@ -356,8 +360,14 @@ def calc_grid_distortion_constraint(coeffsx,coeffsy,mesh_base,dMuNbs,nfxy,nfyx,n
         y_avg = np.sum(weights*coor_lower[index,1],axis = 1,keepdims=True)
         r_avg = np.hstack((x_avg,y_avg))
         diff_vector = coor_lower_dist - r_avg
-        ineq_bump_sliding[:,iMu] = diff_vector[:,0]**2+diff_vector[:,1]**2 - .2*dx
+        vect1 = coor_lower_dist-coor_lower[index[:,0],:]
+        vect2 = coor_lower[index[:,1],:]-coor_lower[index[:,0],:]
+        vect3 = np.cross(vect1,vect2)
+        dis_index_pts = (vect2[:,0]**2+vect2[:,1]**2)**.5
+        ineq_bump_sliding[:,iMu] = np.abs(vect3/dis_index_pts)**2-0.3*dx
+        #ineq_bump_sliding[:,iMu] = diff_vector[:,0]**2+diff_vector[:,1]**2 - .3*dx
 
+    #return np.append(np.reshape(ineq,(-1),'F'),np.append(ineq_bump_sliding[0],ineq_bump_sliding[1]))
     return np.append(np.reshape(ineq,(-1),'F'),np.reshape(ineq_bump_sliding,(-1),'F'))
     #return np.reshape(ineq,(-1),'F')
 #enddef calc_grid_distortion_constraint
@@ -398,7 +408,7 @@ class Project_TSMOR_Offline(object):
     solnPost - Post-process optimization solution
     """  
     
-    def __init__(self,u_db,Mus_db,iRef,iNbs,mesh_base,nfx,nfy,nfxy,nfyx,ng=1):
+    def __init__(self,u_dbs,Mus_db,iRef,iNbs,mesh_base,nfx,nfy,nfxy,nfyx,ng=1):
         """
         Constructor of class
         
@@ -415,6 +425,10 @@ class Project_TSMOR_Offline(object):
                  and Balajewicz (2019))
         normalised : bool variable telling is normalised variables are used or not 
         """
+        self.u_db_all = u_dbs
+        self.u_ref_all = u_dbs[iRef,:,:]
+        self.uNbs_all = [u_dbs[iNb,:,:] for iNb in iNbs]
+        u_db = u_dbs[:,:,6:7]
         self.iRef = iRef
         self.uRef = u_db[iRef,:,:]    #Extract reference snapshot
         # Form list of neighbouring snapshots
@@ -468,7 +482,8 @@ class Project_TSMOR_Offline(object):
     
     # Post-process the optimization solution
     def solnPost(self,output):
-
+        
+        
         coeffs = output[0]
         coeffsx = coeffs[:self.nfx*self.ng]
         coeffsy = coeffs[self.nfx*self.ng:]
@@ -480,12 +495,12 @@ class Project_TSMOR_Offline(object):
         
         plt.figure()
         for iNb, dMu in enumerate(self.dMuNbs):
-            dist_nb = calc_transported_snap(coeffsx,coeffsy,points,self.uRef,dMu,self.nfxy,self.nfyx,ng=self.ng)
+            dist_nb = calc_transported_snap(coeffsx,coeffsy,points,self.u_ref_all,dMu,self.nfxy,self.nfyx,ng=self.ng)
             #dist_nb_sq = np.reshape(dist_nb,(128,256,-1))
             #uNbs_sq = np.reshape(self.uNbs[iNb],(128,256,-1))
             plt.subplot(2,1,iNb+1)
-            plt.tricontour(points[:,0],points[:,1],self.uNbs[iNb][:,0],20,colors = "black",linestyles = 'dashdot') 
-            CS = plt.tricontour(points[:,0],points[:,1],dist_nb[:,0],20) 
+            plt.tricontour(points[:,0],points[:,1],self.uNbs_all[iNb][:,3],20,colors = "black",linestyles = 'dashdot') 
+            CS = plt.tricontour(points[:,0],points[:,1],dist_nb[:,3],20) 
             plt.clabel(CS, inline=1, fontsize=10)
         plt.title("Distorted and neighboouring snapshot")
         #plt.savefig("/home/manthangoyal/manthan/study/TSMOR_data/x-4,2,y-2,0/unstruct/density/bump-points-constraint/shepard/"+str(self.iRef)+"/contour.png")
@@ -555,7 +570,7 @@ class Project_TSMOR_Offline(object):
 #endclass Project_TSMOR_Offline
 
 
-def calc_transported_basis(coeffsRefs,xarr,uRefs,dMuRefs,ng=1):
+def calc_transported_basis(coeffsRefsx,coeffsRefsy,points,uRefs,dMuRefs,nfxy,nfyx,ng=1):
     """
     Calculate the basis set for a new case by transporting various reference
     snapshots using grid distortion coefficients precalculated in offline phase,
@@ -563,20 +578,26 @@ def calc_transported_basis(coeffsRefs,xarr,uRefs,dMuRefs,ng=1):
     to be predicted
     
     INPUTS:
-    coeffsRefs : 2D array of coefficients towards grid distortions, with
+    coeffsRefsx : 2D array of coefficients towards grid distortions in x, with
                  dimensions as:
                  1: Various grid distortion basis functions
                  2: Various snapshots to be transported
-    xarr       : Array of grid points
+    coeffsRefsy : 2D array of coefficients towards grid distortions in y, with
+                 dimensions as:
+                 1: Various grid distortion basis functions
+                 2: Various snapshots to be transported
+    points       : 2D Array of grid points [x,y]
     uRefs      : 3D array of reference snapshots to be 'transported', with
                  dimensions as:
-                 1: data along 'xarr',
+                 1: data along nodes
                  2: data for each component (flow variable),
                  3: data for each reference snapshot
     dMuRefs    : Parameter differences between the reference snapshots and the
                  case to be predicted
     ng         : Total number of 'g' basis functions ('N_q' in eqn. 11 of Nair
                  and Balajewicz (2019))
+    nfxy       : y dependency of x basis functions
+    nfxy       : x dependency of y basis functions
     
     OUTPUTS:
     phis : List of transported reference snapshots that form the basis set for
@@ -584,10 +605,161 @@ def calc_transported_basis(coeffsRefs,xarr,uRefs,dMuRefs,ng=1):
     """
     phis = []
     for iRef in range(len(dMuRefs)):
-        phis.append(calc_transported_snap(coeffsRefs[:,iRef],xarr, \
-            uRefs[:,:,iRef],dMuRefs[iRef],False,ng=ng))
+        phis.append(calc_transported_snap(coeffsRefsx[:,iRef],coeffsRefsy[:,iRef],\
+            points,uRefs[iRef,:,:],dMuRefs[iRef],nfxy,nfyx,ng=ng))
     return phis
 #enddef calc_transported_basis
+
+def residual(mesh,u,uFOM,LNorm,sigma,refNorm=None):
+
+        gamma_value = 1.4
+        # Pre-allocate storage for normalized weighted residual vector (output);
+        # it will be flattened prior to actual return
+        ResN = 4
+        NCellRes = mesh.getNCell()
+        Res = np.zeros((ResN,NCellRes))
+        dataType = 'N'
+        NDime =2
+        intHlprGrad = IntegralHlprDomainGrad(mesh,dataType)
+        # We find the face flux values from (a) the flow variable values on the
+        # faces, and (b) the pre-calculated face areas & their unit normals.
+        # For node-based data, the average of the vertex values is deemed the
+        # face value of the data.
+        # Subsequently, the integrated cell divergences are calculated as the
+        # dot product of the face fluxes with the face normal vectors, and the
+        # results are added over all the faces.
+        # To this, we add the pressure gradient for momentum residues.
+        # N.B.: The algorithm doesn't need to make any special provision for the
+        # various element types.
+        ncrY = 0 #No. of Cells whose Residuals are found Yet (0 at start)
+        for iTyp, FaceMeasuresTyp in enumerate(intHlprGrad.FaceMeasures):
+            if FaceMeasuresTyp is None: #No cells of this type in mesh
+                continue
+            # Find No. of Cells whose Residuals are to be found for this Type
+            ncrT = FaceMeasuresTyp.shape[0]
+            nFacesInCellsOfTyp = FaceMeasuresTyp.shape[1]
+            for ifc in range(nFacesInCellsOfTyp):#Go thru all faces of cell type
+                # Extract the direction cosines and areas of this face in all
+                # retained cells of this type
+                faceDirCoss = FaceMeasuresTyp[:,ifc,:-1]
+                faceAreas = FaceMeasuresTyp[:,ifc,-1]
+
+                # In the following, we need density, pressure and temperature.
+                # N.B. whereas density and temperature are normalized by their
+                # respective ambient values (rho_inf & temp_inf), pressure is
+                # normalized by rho_inf * a_inf**2 (for compatibility in the
+                # momentum equation). Thus, the normalized ideal gas law is
+                #   pressure = density * temperature / SpHt.
+                
+                # At this stage pressure, density and temperature are available;
+                # these are all 1D arrays of same length
+                dataLen = np.shape(u)[0]    #Get common length of data arrays
+                faceContribs = intHlprGrad.faceContribs[iTyp][ifc]
+
+                #Full-domain solution reconstructed in RAM
+                # Get 2D array of node/face indices of mesh that contribute, with
+                # rows being all cells of this type being considered, and columns
+                # being the vertices of the face (for node-based data) or the
+                # (singleton) face itself (for face-based data)
+                iContribs = intHlprGrad.cellContribs[iTyp][:,faceContribs]
+                #print(iContribs)
+               
+                #print(np.shape(u))
+                # Retrieve momentum componets
+                density = np.average(u[iContribs,0:1],axis=1)
+                pressure = np.average(u[iContribs,3:4],axis=1)
+                vels = np.average(u[iContribs,1:3],axis=1)
+                #print(np.shape(vels))
+                #print(np.shape(faceAreas))
+                #print(np.shape(pressure[:]))
+                #vels = np.stack((vel_x,vel_y),axis=1)
+                momenta = density*vels
+                temperature = pressure / density * gamma_value
+                
+                #print("hopefully values are correctly calculated")
+                # Calculate mass flux on faces using momenta and face properties
+                mf = np.sum(momenta*faceDirCoss,axis=1)*faceAreas
+                # Compose the total enthalpy per unit mass
+                #   enthalpyTot = Cp * T + (u**2+v**2+...)/2,
+                # which is the sum of enthalpy + kinetic energies per unit mass.
+                # Normalizing by a_inf**2, we have
+                #print(temperature[:200,:])
+                enthalpyTot = temperature.flatten()/(gamma_value-1)+np.sum(vels**2,axis=1)/2
+                #print("done")
+                #exit()
+                # Calculate contribution of the current face to the residues of
+                # the various equations in each cell (integrated over the 
+                # corresponding cell volumes), and add to running sum over all
+                # faces
+                # Residue of mass cons. eqn. (w/ U = velocity vector [u, v, w])
+                #   div(density U)
+                Res[0,ncrY:ncrY+ncrT] += mf
+                # Residue of energy conservation equation
+                #    div(Etot density U)
+                Res[3,ncrY:ncrY+ncrT] += enthalpyTot*mf
+                # Residue of x-momentum conservation equation
+                #    div(density u U) + dp_dx.
+                # Likewise for the other two components.
+                #print("done1")
+                for iMom in range(NDime):
+                    momContrib = pressure.flatten()*faceDirCoss[:,iMom]*faceAreas \
+                        + mf*vels[:,iMom]
+                    Res[1+iMom,ncrY:ncrY+ncrT] += momContrib
+            #endfor ifc in range(nFacesInCellsOfTyp)
+            # In case of L2-norm calculation, divide the residual in each cell
+            # by the square root of its metric (volume in 3D; area in 2D; etc)
+            # to get weighted residual, whose 2-norm will approximate L2-norm.
+            # No such weighting is needed for 1-norm to approximate L1-norm.
+            if LNorm == 2:
+                for iRes in range(ResN):
+                    Res[iRes,ncrY:ncrY+ncrT] \
+                        /= np.sqrt(intHlprGrad.Metrics[iTyp])
+            # Increment No. of Cells whose Residuals are found Yet with that of
+            # Cells whose Residuals are found for this Type
+            ncrY += ncrT
+        #endfor iTyp, FaceMeasuresTyp in ...
+        
+        # Calculate the Lp^p norms of the individual (normalized) residuals
+        ResNormsP = np.zeros((ResN))
+        for iRes in range(ResN):
+            ResNormsP[iRes] = np.linalg.norm(Res[iRes,:],ord=LNorm) \
+                **LNorm        
+        penalty = sigma*penalty_inlet(u,mesh,uFOM)
+        #print(penalty)
+        ResNormsP_penalty = ResNormsP+penalty
+        #print(ResNormsP_penalty)
+
+        #if refNorm is None:
+        #    return np.linalg.norm(ResNormsP_penalty,ord=1)
+        #else:
+        #    #print(refNorm)
+        #    #print(ResNormsP_penalty)
+        #    return ResNormsP ,np.linalg.norm(ResNormsP_penalty,ord=1)/refNorm
+        if refNorm is None:
+            return ResNormsP_penalty
+        else:
+            #print(refNorm)
+            #print(ResNormsP_penalty)
+            return ResNormsP ,np.linalg.norm(ResNormsP_penalty/refNorm,ord=1)
+    #enddef evalObj
+        
+def penalty_inlet(u,mesh,uFOM):
+
+    mesh._readMeshCellNodes()
+    nodes_inlet = np.unique(mesh.getMarkCells('inlet')[0][0][0])
+    u_inlet = u[nodes_inlet,:]
+    uFOM_inlet = uFOM[nodes_inlet,:]
+    #print(u_inlet)
+    #exit()
+
+    penalNorm = np.zeros(np.shape(u)[1])
+    for iRes in range(np.shape(u)[1]):
+        penalNorm[iRes] = np.linalg.norm((u_inlet-uFOM_inlet)[:,iRes]\
+            ,ord=2)**2        
+    return penalNorm
+    #u_error = np.linalg.norm(u_inlet-uFOM_inlet,2)**2
+
+    #return u_error
 
 
 class Project_TSMOR_Online(object):
@@ -613,29 +785,37 @@ class Project_TSMOR_Online(object):
     obj_df    - objective function derivatives  : list
     con_ceq   - equality constraints            : list
     con_dceq  - equality constraint derivatives : list[list]
-    con_cieq  - inequality constraints          : listerror function with multi variable input
+    con_cieq  - inequality constraints          : list
     con_dcieq - inequality constraint gradients : list[list]
     Auxiliary methods -
     compose_soln - Compose the solution from generalized coordinates
     solnPost     - Post-process optimization solution
     """  
     
-    def __init__(self,uRefs,MuRefs,coeffsRefs,xarr,MuNew,prblm_setup, \
-            sigma=100000):
+    def __init__(self,uTest,uRefs,MuRefs,coeffsRefsx,coeffsRefsy,mesh,MuNew, \
+            coords0,nfx_y,nfy_x,ng=1,sigma=100000):
         # Register some of the supplied variables directly as attributes of self
-        self.prblm_setup = prblm_setup
-        self.xarr = xarr
+        self.uTest = uTest ## It has density velx vely pressure [2d]
+        self.mesh = mesh
         self.sigma = sigma
+        self.all_res = []
+        self.nodes = mesh.getNodes()
+        self.nfxy = nfx_y
+        self.nfyx = nfy_x
+        self.ng = ng
         # Distances of new snapshot from reference ones in parameter space
         dMuRefs = MuNew - MuRefs
         # Basis calculation by transporting the supplied reference snapshots
-        self.phis = calc_transported_basis(coeffsRefs,xarr,uRefs,dMuRefs)
+        self.phis = calc_transported_basis(coeffsRefsx,coeffsRefsy,self.nodes,\
+            uRefs,dMuRefs, self.nfxy,self.nfyx,ng=self.ng)
         # Initial guess of generalized coordinates (for basis set of transported
         # snapshots), based on inverse-distance weights in parameter space
-        self.coords0 = (1./abs(dMuRefs))/sum(1./abs(dMuRefs))
+        self.coords0 = coords0
         # Calculate 1st-order finite difference operator with 4th-order accuracy
-        self.Dx = Findiff_Taylor_uniform(len(xarr),1,4)/(xarr[1]-xarr[0])
-
+        #self.Di = Findiff_Taylor_uniform(len(self.iarr),1,3)/(self.iarr[1]-self.iarr[0])
+        #self.Dj = Findiff_Taylor_uniform(len(self.jarr),1,3)/(self.jarr[1]-self.jarr[0])
+        u = self.compose_soln(self.coords0)
+        self.refNorm = residual(self.mesh,u,self.uTest,2,self.sigma)
     # Compose the snapshot solution using the supplied set of generalized
     # coordinates that comprise the weights of the basis set 'phis'
     def compose_soln(self,coords):
@@ -651,26 +831,11 @@ class Project_TSMOR_Online(object):
     # on the supplied generalized coordinates
     def obj_f(self,coords):
         u = self.compose_soln(coords)
-        ResAug = qs.quasi_1D_steady_soln_residual(u,self.prblm_setup, \
-            self.xarr,Dx=self.Dx)
-        # Retrieve the solution's values corresponding to the b.c.'s of the
-        # problem
-        u_rhoin, u_pin, u_pout = qs.quasi_1D_steady_soln_bcs(u,self.prblm_setup)
-        # Supplant the inlet value of mass residual with the discrepancy in the
-        # inlet density b.c., scaled by 'sigma'; the desired value of inlet
-        # density is available as the 0th entry of the 'prblm_setup' array
-        ResAug[0,0] = self.sigma*(u_rhoin - self.prblm_setup[0])
-        # Supplant the inlet value of mom. residual with the discrepancy in the 
-        # inlet pressure b.c., scaled by 'sigma'; the desired value of inlet
-        # pressure is available as the 1st entry of the 'prblm_setup' array
-        ResAug[0,1] = self.sigma*(u_pin - self.prblm_setup[1])
-        # Supplant the outlet value of mom. residual with the discrepancy in the
-        # outlet pressure b.c., scaled by 'sigma'; the desired value of outlet
-        # pressure is available as the 2nd entry of the 'prblm_setup' array
-        ResAug[-1,1] = self.sigma*(u_pout - self.prblm_setup[2])
-        # Return singleton list of the l_1 norm of the augmented residuals
-        # obtained above, reshaped into a 1D array
-        return [np.linalg.norm(ResAug.reshape(-1),ord=1)]
+
+        #print(np.shape(u_flat))
+        res_separate,res = residual(self.mesh,u ,self.uTest,2,self.sigma,refNorm = self.refNorm)
+        self.all_res.append(res_separate)
+        return [res]
 
     """ All the remaining optimizer interfaces are left blank """
     def con_cieq(self,coords):
@@ -689,14 +854,38 @@ class Project_TSMOR_Online(object):
         return []
     
     # Post-process the optimization solution
-    def solnPost(self,output,q_vldt=None):
+    def solnPost(self,output):
         coords = output[0]
         print('coords = ['+', '.join([str(c) for c in coords])+']')
-        solns = [self.compose_soln(coords)]
-        if q_vldt is not None:  solns.append(q_vldt)
-        Res = qs.quasi_1D_steady_soln_residual(solns[0],self.prblm_setup, \
-            self.xarr,Dx=self.Dx)
-        qs.quasi_1D_steady_soln_plot(self.xarr,solns,legends=['ROM','True'])
-        
+        u_computed = self.compose_soln(coords)
 
-#endclass Project_TSMOR_Online
+        var_names = ['Density','velocity x','velocity y','pressure']
+        
+        res_separate,res = residual(self.mesh,u_computed,self.uTest,2,self.sigma,refNorm = self.refNorm)
+        print("residual at end", res)     
+
+        plt.figure()
+        for var in range(np.shape(u_computed)[1]):
+            
+            plt.subplot(2,2,var+1)
+
+            cs1 = plt.tricontour(self.nodes[:,0],self.nodes[:,1],u_computed[:,var],20)
+            cs2 = plt.tricontour(self.nodes[:,0],self.nodes[:,1],self.uTest[:,var],20,colors = 'red')
+            
+            h1,_ = cs1.legend_elements()
+            h2,_ = cs2.legend_elements()
+            plt.legend([h1[0], h2[0]], ['Computed', 'Actual'])
+            plt.title('Contour Plot '+var_names[var])
+
+            
+        plt.show()
+
+        nodes_lower = np.unique(self.mesh.getMarkCells('lowerwall')[0][0][0])
+
+        for var in range(np.shape(u_computed)[1]):
+
+            plt.scatter(self.nodes[nodes_lower,0],u_computed[nodes_lower,var],label = 'Computed')
+            plt.scatter(self.nodes[nodes_lower,0],self.uTest[nodes_lower,var],label='Actual')
+            plt.legend()
+            plt.title('Surface values '+var_names[var])
+            plt.show()
