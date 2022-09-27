@@ -334,40 +334,33 @@ def calc_grid_distortion_constraint(coeffsx,coeffsy,mesh_base,dMuNbs,nfxy,nfyx,n
     ### make a new ineq array which has data related to cell area and normal no. of cells * 2
     parameters_base = meshCellFaceProps.CalcSignedArea2d(mesh_base)
     area_min = np.min(parameters_base**2)/10000
-    for iMu, dMu in enumerate(dMuNbs):
 
+    for iMu, dMu in enumerate(dMuNbs):
+        
         #calculate the constraints to restrics excessive distortion
         mesh_distorted.nodes = calc_distorted_grid(coeffsx,coeffsy,mesh_base.getNodes(),dMu,nfxy,nfyx,ng)
         parameters_distorted = meshCellFaceProps.CalcSignedArea2d(mesh_distorted)
         ineq[:,iMu] = area_min -1*parameters_distorted*parameters_base
-
         #calculate the constraints to implement sliding boundary
         #nodes_lower_dist ->Nodes of the bump wall of the distorted mesh 
         nodes_lower_dist = np.unique(mesh_distorted.getMarkCells('lowerwall')[0][0][0]) 
         coor_lower_dist = mesh_distorted.getNodes()[nodes_lower_dist]
-        #print(type(nodes_lower_dist))
-
-        #nodes_lower_dist = nodes_lower_dist[np.where((coor_lower_dist[:,0]<=2) & (coor_lower_dist[:,0]>=1))]
-        #coor_lower_dist = mesh_distorted.getNodes()[nodes_lower_dist]
-
-        #print("number of points on boundary- ",np.shape(coor_lower,"  ", np.shape(coor_lower_dist)))
         extrap_func = KDTree(coor_lower)
-        dis,index = extrap_func.query(coor_lower_dist,2)    
-        dis_copy = np.copy(dis)
-        dis_copy[dis[:,0]==0,0] = 1e-20
-        weights = (1/dis_copy)/(np.sum(1/dis_copy,axis = 1,keepdims=True))
-        x_avg = np.sum(weights*coor_lower[index,0],axis = 1,keepdims=True)
-        y_avg = np.sum(weights*coor_lower[index,1],axis = 1,keepdims=True)
-        r_avg = np.hstack((x_avg,y_avg))
-        diff_vector = coor_lower_dist - r_avg
+        dis,index = extrap_func.query(coor_lower_dist,2)   
         vect1 = coor_lower_dist-coor_lower[index[:,0],:]
         vect2 = coor_lower[index[:,1],:]-coor_lower[index[:,0],:]
         vect3 = np.cross(vect1,vect2)
         dis_index_pts = (vect2[:,0]**2+vect2[:,1]**2)**.5
-        ineq_bump_sliding[:,iMu] = np.abs(vect3/dis_index_pts)**2-0.3*dx
+        ineq_bump_sliding[:,iMu] = np.abs(vect3/dis_index_pts)**2-0.3*dx 
+        #dis_copy = np.copy(dis)
+        #dis_copy[dis[:,0]==0,0] = 1e-20
+        #weights = (1/dis_copy)/(np.sum(1/dis_copy,axis = 1,keepdims=True))
+        #x_avg = np.sum(weights*coor_lower[index,0],axis = 1,keepdims=True)
+        #y_avg = np.sum(weights*coor_lower[index,1],axis = 1,keepdims=True)
+        #r_avg = np.hstack((x_avg,y_avg))
+        #diff_vector = coor_lower_dist - r_avg
+        
         #ineq_bump_sliding[:,iMu] = diff_vector[:,0]**2+diff_vector[:,1]**2 - .3*dx
-
-    #return np.append(np.reshape(ineq,(-1),'F'),np.append(ineq_bump_sliding[0],ineq_bump_sliding[1]))
     return np.append(np.reshape(ineq,(-1),'F'),np.reshape(ineq_bump_sliding,(-1),'F'))
     #return np.reshape(ineq,(-1),'F')
 #enddef calc_grid_distortion_constraint
