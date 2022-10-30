@@ -12,7 +12,7 @@ from MyPythonCodes.tools.scipy_tools import scipy_slsqp
 from MyPythonCodes.mesh import su2MeshData,UnstructuredMesh, getFileExtUSMD, meshCellFaceProps, polyMeshMetrics
 
 import Quasi1D_Steady_TSMOR as tsmor
-
+#import Quasi1D_Steady_TSMOR_sir_interp as tsmor
 from pysph.base.utils import get_particle_array
 from pysph.tools.interpolator import Interpolator
 
@@ -43,8 +43,8 @@ transport_db_fn=os.path.join(options.path,'transport_fields_nfx'+str(nfx)+'_nfy'
 
 print('\n'+'-'*80+'\nOffline stage: Loading snapshots ...\n'+'-'*80)
 
-#mshFn = "/home/manthangoyal/SU2_data/flow_data/unstruct/bump_unstruct_0.6x" + getFileExtUSMD() #Mesh USM File
-mshFn = "/home/manthangoyal/SU2_data/mesh_1x_bump" + getFileExtUSMD() #Mesh USM File
+mshFn = "/home/manthangoyal/SU2_data/flow_data/unstruct/bump_unstruct_0.6x" + getFileExtUSMD() #Mesh USM File
+#mshFn = "/home/manthangoyal/SU2_data/mesh_1x_bump" + getFileExtUSMD() #Mesh USM File
 #mshFnFull = os.path.join(os.path.abspath(os.getcwd()), mshFn)
 mesh_base = UnstructuredMesh(mshFn) #base mesh is the original mesh without any distortion
 mesh_base._readMeshNodes() #read the nodes of the mesh in the base mesh
@@ -74,13 +74,13 @@ print("max", np.shape(u_db))
 nodes_lower = np.unique(mesh_base.getMarkCells('lowerwall')[0][0][0]) #Nodes on the lower wall
 coor_lower = mesh_base.getNodes()[nodes_lower]#Co-ordinates of lower wall's nodes 
 
-print(np.shape(u_db))
-plt.tricontour(Nodes[:,0],Nodes[:,1],u_db_normalised[0,:,0],20) # choose 20 contour levels, just to show how good its interpolation is
-plt.tricontour(Nodes[:,0],Nodes[:,1],u_db_normalised[1,:,0],20,colors='red')
-#plt.tricontour(Nodes[:,0],Nodes[:,1],u_db_normalised[2,:,0],20,colors='black') 
+# print(np.shape(Nodes),np.shape(u_db))
+# plt.tricontour(Nodes[:,0],Nodes[:,1],u_db_normalised[0,:,0],20) # choose 20 contour levels, just to show how good its interpolation is
+# plt.tricontour(Nodes[:,0],Nodes[:,1],u_db_normalised[1,:,0],20,colors='red')
+# #plt.tricontour(Nodes[:,0],Nodes[:,1],u_db_normalised[2,:,0],20,colors='black') 
 
-plt.colorbar()
-plt.show()
+# plt.colorbar()
+# plt.show()
 
 u_uniform = np.ones((np.shape(Nodes)[0],1))
 h = 4 * np.max(np.diff(Nodes[:,0],axis=0))
@@ -113,8 +113,6 @@ if train==1:
         # Create optimization project defining offline TSMOR problem; note that
         # a) We only focus on the first component of the snapshots, and
         # b) We normalize the parameter values for better performance
-
-
         project_off=tsmor.Project_TSMOR_Offline(u_db,\
         Mus_db_norm,iRef,iNbs,mesh_base,nfx,nfy,nfx_y,nfy_x,ng=ng)
 
@@ -122,8 +120,8 @@ if train==1:
         if iRef == 0:   #First snapshot
             coeffsx0 = np.zeros((nfx*ng))   #Nothing better than zeros
             coeffsy0 = np.zeros((nfy*ng))   #Nothing better than zeros
-            coeffsx0 = [-0.0142, 0.0413, -0.0377, 0.0790, -0.0207]
-            coeffsy0 = [-0.0060, 0.0825, -0.0384]
+            coeffsx = [-0.1065, 0.1383, -0.0328, 0.0813, -0.0153]
+            coeffsy = [-0.0198, 0.1123, -0.0234]
             #use when both density and vel x are used 
             #coeffsx0 = [-0.0015, 0.0253, -0.0456, 0.0776, -0.0254]
             #coeffsy0 = [-0.0044, 0.0737, -0.0427]

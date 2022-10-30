@@ -16,12 +16,13 @@ from scipy.interpolate import SmoothBivariateSpline
 import copy
 from MyPythonCodes.tools import Findiff_Taylor_uniform
 from MyPythonCodes.mesh import UnstructuredMesh, getFileExtUSMD, \
-    meshCellFaceProps,PolygonNormAreaCntrd,interpDistorted
+    meshCellFaceProps,PolygonNormAreaCntrd
 from scipy.spatial import KDTree
 from pysph.base.utils import get_particle_array
 from pysph.tools.interpolator import Interpolator
 import gc
 from SteadyAeroDyn_PY.SteadyAeroDyn.DataHandling import IntegralHlprDomainGrad
+import timeit
 
 '''
 check if interpolation is happening properly
@@ -126,6 +127,12 @@ def calc_distorted_grid(coeffsx,coeffsy,points,dMu,nfxy,nfyx,ng=1):
     xd : Distorted grid (supplied original grid 'xarr' plus the grid distortion
          'c_s')
     """
+    print("/home/manthangoyal/DDP_codes/TSMOR_UNSTRUCT/Quasi1D_Steady_TSMOR.py/Plotting in calc_distorted_grid")
+    points_new = points + calc_grid_distortion(coeffsx,coeffsy,points,dMu,nfxy,nfyx,ng=ng)
+    plt.scatter(points[:,0],points[:,1],c="r",label = "original",s=2)
+    plt.scatter(points_new[:,0],points_new[:,1],c="b",label = "Dist",s=2)
+    plt.legend()
+    plt.show()
     return points + calc_grid_distortion(coeffsx,coeffsy,points,dMu,nfxy,nfyx,ng=ng)
 #enddef calc_distorted_grid
 
@@ -156,6 +163,7 @@ def calc_transported_snap(coeffsx,coeffsy,points,u,dMu,nfxy,nfyx,ng=1):
     # (scalar) field; to make the subsequent steps agnostic to this, we reshape
     # it to a dummy 2D array if it is 1D in the following
     ushp = u.shape
+    
     ##print(ushp)
     if len(ushp) > 1:   #2D array
         nc = ushp[1]
@@ -164,6 +172,8 @@ def calc_transported_snap(coeffsx,coeffsy,points,u,dMu,nfxy,nfyx,ng=1):
         u = np.reshape(u,(-1,1))    #Reshape 'u' to a single-column 2D array
     # Allocate return variable
     ut = np.zeros((ushp[0],nc)) #For now, this is a 2D array (reshaped later)
+    start = timeit.default_timer()
+ 
     for ic in range(nc):    #Go thru each component
         # Generate the interpolation object by assuming that 'u' is specified
         # on the distorted grid
@@ -201,27 +211,16 @@ def calc_transported_snap(coeffsx,coeffsy,points,u,dMu,nfxy,nfyx,ng=1):
         '''
         Pysph memthod for extrapolation
         '''
-        #additional_props = ['prop1', 'prop2', 'prop3']
+
         h = 4 * np.max(np.diff(points_new[:,0],axis=0))
         m = h**2
         pa = get_particle_array(name = "myprop",x=points_new[:,0],y=points_new[:,1],density=u[:,0],h = 0.4*(points[0,0]-points[1,0]),
             m=m)
-        #pa = get_particle_array(name = "myprop",additional_props=additional_props)
-        #pa.prop1[:] = 1.
-        #pa.add_property('new_prop')
-        #pa.new_prop[:] = constant
         interp = Interpolator([pa], x=points[np.isnan(ut[:,ic]),0],
                                   y=points[np.isnan(ut[:,ic]),1],method='shepard')
         
         ut[np.isnan(ut[:,ic]),ic] = interp.interpolate('density')
-        #plt.plot(ut[x,ic])
-        #plt.plot(u[x,ic])
-        #plt.show()
 
-        #exit()
-
-        #print(extrap_data)
-        #print(ut[x,ic])
 
         #extrap_func = SmoothBivariateSpline(points_new[:,0],points_new[:,1],u[:,ic],s=0.0,kx=1,ky=1)
         ##print("indices ",np.argwhere(np.isnan(ut)))
@@ -231,6 +230,10 @@ def calc_transported_snap(coeffsx,coeffsy,points,u,dMu,nfxy,nfyx,ng=1):
         #print(extrap_func(points[np.isnan(ut[:,ic]),0],points[np.isnan(ut[:,ic]),1]))
         #print(np.shape(extrap_func(points[:,0],points[:,1])))
         #ut[np.isnan(ut[:,ic]),ic] = extrap_func(points[np.isnan(ut[:,ic]),0],points[np.isnan(ut[:,ic]),1])
+    stop = timeit.default_timer()
+
+
+    print('Time: ', stop - start) 
     return np.reshape(ut,ushp)  #Make sure to return 1D array if input was so
 #enddef calc_transported_snap
 
@@ -267,6 +270,11 @@ def calc_transported_snap_error(coeffsx,coeffsy,mesh_base,uRef,uNbs,dMuNbs,nfxy,
         # snapshot and the neighbour to the running sum of error 
         #print("marker tags", mesh_base.getMarkTags())
         #nodes_upper = mesh_base.getMarkTags('upperwall')
+        # points = mesh_base.getNodes()
+        # plt.tricontour(points[:,0],points[:,1],uNbs[inb][:,0],20,colors = "black",linestyles = 'dashdot') 
+        # plt.tricontour(points[:,0],points[:,1],u0t[:,0],20) 
+        # #plt.savefig("/home/manthangoyal/manthan/study/TSMOR_data/x-4,2,y-2,0/unstruct/density/bump-points-constraint/shepard/"+str(self.iRef)+"/contour.png")
+        #plt.show()
         mesh_distorted.nodes = calc_distorted_grid(coeffsx,coeffsy,mesh_base.getNodes(),dMu,nfxy,nfyx,ng=ng)
         nodes_lower = np.unique(mesh_base.getMarkCells('lowerwall')[0][0][0])
         nodes_lower_dist = np.unique(mesh_distorted.getMarkCells('lowerwall')[0][0][0])
@@ -334,33 +342,40 @@ def calc_grid_distortion_constraint(coeffsx,coeffsy,mesh_base,dMuNbs,nfxy,nfyx,n
     ### make a new ineq array which has data related to cell area and normal no. of cells * 2
     parameters_base = meshCellFaceProps.CalcSignedArea2d(mesh_base)
     area_min = np.min(parameters_base**2)/10000
-
     for iMu, dMu in enumerate(dMuNbs):
-        
+
         #calculate the constraints to restrics excessive distortion
         mesh_distorted.nodes = calc_distorted_grid(coeffsx,coeffsy,mesh_base.getNodes(),dMu,nfxy,nfyx,ng)
         parameters_distorted = meshCellFaceProps.CalcSignedArea2d(mesh_distorted)
         ineq[:,iMu] = area_min -1*parameters_distorted*parameters_base
+
         #calculate the constraints to implement sliding boundary
         #nodes_lower_dist ->Nodes of the bump wall of the distorted mesh 
         nodes_lower_dist = np.unique(mesh_distorted.getMarkCells('lowerwall')[0][0][0]) 
         coor_lower_dist = mesh_distorted.getNodes()[nodes_lower_dist]
+        #print(type(nodes_lower_dist))
+
+        #nodes_lower_dist = nodes_lower_dist[np.where((coor_lower_dist[:,0]<=2) & (coor_lower_dist[:,0]>=1))]
+        #coor_lower_dist = mesh_distorted.getNodes()[nodes_lower_dist]
+
+        #print("number of points on boundary- ",np.shape(coor_lower,"  ", np.shape(coor_lower_dist)))
         extrap_func = KDTree(coor_lower)
-        dis,index = extrap_func.query(coor_lower_dist,2)   
+        dis,index = extrap_func.query(coor_lower_dist,2)    
+        dis_copy = np.copy(dis)
+        dis_copy[dis[:,0]==0,0] = 1e-20
+        weights = (1/dis_copy)/(np.sum(1/dis_copy,axis = 1,keepdims=True))
+        x_avg = np.sum(weights*coor_lower[index,0],axis = 1,keepdims=True)
+        y_avg = np.sum(weights*coor_lower[index,1],axis = 1,keepdims=True)
+        r_avg = np.hstack((x_avg,y_avg))
+        diff_vector = coor_lower_dist - r_avg
         vect1 = coor_lower_dist-coor_lower[index[:,0],:]
         vect2 = coor_lower[index[:,1],:]-coor_lower[index[:,0],:]
         vect3 = np.cross(vect1,vect2)
         dis_index_pts = (vect2[:,0]**2+vect2[:,1]**2)**.5
-        ineq_bump_sliding[:,iMu] = np.abs(vect3/dis_index_pts)**2-0.3*dx 
-        #dis_copy = np.copy(dis)
-        #dis_copy[dis[:,0]==0,0] = 1e-20
-        #weights = (1/dis_copy)/(np.sum(1/dis_copy,axis = 1,keepdims=True))
-        #x_avg = np.sum(weights*coor_lower[index,0],axis = 1,keepdims=True)
-        #y_avg = np.sum(weights*coor_lower[index,1],axis = 1,keepdims=True)
-        #r_avg = np.hstack((x_avg,y_avg))
-        #diff_vector = coor_lower_dist - r_avg
-        
+        ineq_bump_sliding[:,iMu] = np.abs(vect3/dis_index_pts)**2-0.3*dx
         #ineq_bump_sliding[:,iMu] = diff_vector[:,0]**2+diff_vector[:,1]**2 - .3*dx
+
+    #return np.append(np.reshape(ineq,(-1),'F'),np.append(ineq_bump_sliding[0],ineq_bump_sliding[1]))
     return np.append(np.reshape(ineq,(-1),'F'),np.reshape(ineq_bump_sliding,(-1),'F'))
     #return np.reshape(ineq,(-1),'F')
 #enddef calc_grid_distortion_constraint
@@ -418,12 +433,15 @@ class Project_TSMOR_Offline(object):
                  and Balajewicz (2019))
         normalised : bool variable telling is normalised variables are used or not 
         """
+        
         self.u_db_all = u_dbs
         self.u_ref_all = u_dbs[iRef,:,:]
         self.uNbs_all = [u_dbs[iNb,:,:] for iNb in iNbs]
-        u_db = u_dbs[:,:,6:7]
+
+        u_db = u_dbs[:,:,6:7] #using pressure as the only variable
         self.iRef = iRef
-        self.uRef = u_db[iRef,:,:]    #Extract reference snapshot
+        #Extract reference snapshot
+        self.uRef = u_db[iRef,:,:]    
         # Form list of neighbouring snapshots
         self.uNbs = [u_db[iNb,:,:] for iNb in iNbs]
         # Form list of corresponding parameter differentials from reference
